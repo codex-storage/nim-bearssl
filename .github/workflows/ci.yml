@@ -28,6 +28,8 @@ jobs:
             cpu: arm64
           - os: windows
             cpu: amd64
+          - os: windows-gcc-14
+            cpu: amd64
         branch: [version-1-6, version-2-0, devel]
         include:
           - target:
@@ -46,6 +48,9 @@ jobs:
             builder: macos-latest
           - target:
               os: windows
+            builder: windows-latest
+          - target:
+              os: windows-gcc-14
             builder: windows-latest
 
     defaults:
@@ -82,7 +87,7 @@ jobs:
           echo '${{ github.workspace }}/external/bin' >> $GITHUB_PATH
 
       - name: Restore llvm-mingw (Windows) from cache
-        if: runner.os == 'Windows'
+        if: matrix.target.os == 'windows'
         id: windows-mingw-cache
         uses: actions/cache@v4
         with:
@@ -92,7 +97,7 @@ jobs:
       - name: Install llvm-mingw dependency (Windows)
         if: >
           steps.windows-mingw-cache.outputs.cache-hit != 'true' &&
-          runner.os == 'Windows'
+          matrix.target.os == 'windows'
         run: |
           mkdir -p external
           MINGW_BASE="https://github.com/mstorsjo/llvm-mingw/releases/download/20230905"
@@ -108,7 +113,7 @@ jobs:
           mv external/mingw-${{ matrix.target.cpu }}/**/* ./external/mingw-${{ matrix.target.cpu }}
 
       - name: Restore Nim DLLs dependencies (Windows) from cache
-        if: runner.os == 'Windows'
+        if: matrix.target.os == 'windows'
         id: windows-dlls-cache
         uses: actions/cache@v4
         with:
@@ -118,18 +123,30 @@ jobs:
       - name: Install DLLs dependencies (Windows)
         if: >
           steps.windows-dlls-cache.outputs.cache-hit != 'true' &&
-          runner.os == 'Windows'
+          matrix.target.os == 'windows'
         run: |
           mkdir -p external
           curl -L "https://nim-lang.org/download/windeps.zip" -o external/windeps.zip
           7z x -y external/windeps.zip -oexternal/dlls-${{ matrix.target.cpu }}
 
       - name: Path to cached dependencies (Windows)
-        if: >
-          runner.os == 'Windows'
+        if: matrix.target.os == 'windows'
         run: |
           echo '${{ github.workspace }}'"/external/mingw-${{ matrix.target.cpu }}/bin" >> $GITHUB_PATH
           echo "${{ github.workspace }}/external/dlls-${{ matrix.target.cpu }}" >> $GITHUB_PATH
+
+      - name: MSYS2 (Windows amd64)
+        if : ${{ matrix.target.os == 'windows-gcc-14' && matrix.target.cpu == 'amd64' }}
+        uses: msys2/setup-msys2@v2
+        with:
+          path-type: inherit
+          msystem: UCRT64
+          install: >
+            base-devel
+            git
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ntldd-git
 
       - name: Derive environment variables
         run: |
@@ -161,6 +178,17 @@ jobs:
           echo "MAKE_CMD=${MAKE_CMD}" >> $GITHUB_ENV
 
       - name: Build Nim and Nimble
+        if : ${{ matrix.target.os != 'windows-gcc-14' }}
+        run: |
+          curl -O -L -s -S https://raw.githubusercontent.com/status-im/nimbus-build-system/master/scripts/build_nim.sh
+          env MAKE="${MAKE_CMD} -j${ncpu}" ARCH_OVERRIDE=${PLATFORM} NIM_COMMIT=${{ matrix.branch }} \
+            QUICK_AND_DIRTY_COMPILER=1 QUICK_AND_DIRTY_NIMBLE=1 CC=gcc \
+            bash build_nim.sh nim csources dist/nimble NimBinaries
+          echo '${{ github.workspace }}/nim/bin' >> $GITHUB_PATH
+
+      - name: Build Nim and Nimble - Windows (GCC 14)
+        if : ${{ matrix.target.os == 'windows-gcc-14' && matrix.target.cpu == 'amd64' }}
+        shell: msys2 {0}
         run: |
           curl -O -L -s -S https://raw.githubusercontent.com/status-im/nimbus-build-system/master/scripts/build_nim.sh
           env MAKE="${MAKE_CMD} -j${ncpu}" ARCH_OVERRIDE=${PLATFORM} NIM_COMMIT=${{ matrix.branch }} \
@@ -178,6 +206,19 @@ jobs:
           sudo update-alternatives --set gcc /usr/bin/gcc-14
 
       - name: Run tests
+        if : ${{ matrix.target.os != 'windows-gcc-14' }}
+        run: |
+          nim --version
+          nimble --version
+          gcc --version
+          nimble install -y --depsOnly
+          env NIMLANG=c nimble test
+          # C++ support requires fixing const pointer proc assignments
+          # env NIMLANG=cpp nimble test
+
+      - name: Run tests - Windows (GCC 14)
+        if : ${{ matrix.target.os == 'windows-gcc-14' && matrix.target.cpu == 'amd64' }}
+        shell: msys2 {0}
         run: |
           nim --version
           nimble --version
